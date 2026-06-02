@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Packshot Studio — Asset Pipeline</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  body { background:#0b0f14; }
+  .status-dot { width:.6rem; height:.6rem; border-radius:9999px; display:inline-block; }
+  .canvas-checker {
+    background-image:
+      linear-gradient(45deg,#1a1f27 25%,transparent 25%),
+      linear-gradient(-45deg,#1a1f27 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#1a1f27 75%),
+      linear-gradient(-45deg,transparent 75%,#1a1f27 75%);
+    background-size:16px 16px;
+    background-position:0 0,0 8px,8px -8px,-8px 0;
+  }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-semibold text-white">Packshot Studio</h1>
+      <p class="text-xs text-slate-400">Enterprise asset processing pipeline</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="healthBtn" class="px-4 py-2 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">✓ Health Check</button>
+      <button id="settingsBtn" class="px-4 py-2 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">⚙ API Config</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+
+  <!-- Health check result banner -->
+  <div id="healthBanner" class="hidden rounded-xl border p-4 text-sm"></div>
+
+  <!-- Mode selection -->
+  <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <label class="cursor-pointer rounded-xl border border-slate-700 bg-slate-900/60 p-5 hover:border-indigo-500 transition">
+      <input type="radio" name="mode" value="1" class="accent-indigo-500" />
+      <span class="ml-2 font-medium text-white">Mode 1 · Rename Only</span>
+      <p class="text-xs text-slate-400 mt-2">Files → Extract SKU → Rename → ZIP</p>
+    </label>
+    <label class="cursor-pointer rounded-xl border border-slate-700 bg-slate-900/60 p-5 hover:border-indigo-500 transition">
+      <input type="radio" name="mode" value="2" class="accent-indigo-500" checked />
+      <span class="ml-2 font-medium text-white">Mode 2 · Links → Studio</span>
+      <p class="text-xs text-slate-400 mt-2">Links → SKU → Clear BG → Shadows → ZIP</p>
+    </label>
+    <label class="cursor-pointer rounded-xl border border-slate-700 bg-slate-900/60 p-5 hover:border-indigo-500 transition">
+      <input type="radio" name="mode" value="3" class="accent-indigo-500" />
+      <span class="ml-2 font-medium text-white">Mode 3 · Uploads → Studio</span>
+      <p class="text-xs text-slate-400 mt-2">Files → Clear BG → Shadows → ZIP</p>
+    </label>
+    <label class="cursor-pointer rounded-xl border border-slate-700 bg-slate-900/60 p-5 hover:border-indigo-500 transition">
+      <input type="radio" name="mode" value="4" class="accent-indigo-500" />
+      <span class="ml-2 font-medium text-white">Mode 4 · CSV (SKU + Link)</span>
+      <p class="text-xs text-slate-400 mt-2">CSV → Studio → Rename by your SKU → ZIP</p>
+    </label>
+  </section>
+
+  <!-- Input area -->
+  <section class="rounded-xl border border-slate-700 bg-slate-900/60 p-6 space-y-4">
+    <div id="linkInputWrap">
+      <label class="text-sm text-slate-300 font-medium">Image links (one per line)</label>
+      <textarea id="linkInput" rows="5" placeholder="https://example.com/SKU-AB123.jpg"
+        class="mt-2 w-full rounded-lg bg-slate-950 border border-slate-700 p-3 text-sm font-mono focus:border-indigo-500 outline-none"></textarea>
+    </div>
+    <div id="fileInputWrap" class="hidden">
+      <label class="text-sm text-slate-300 font-medium">Upload image files</label>
+      <input id="fileInput" type="file" accept="image/*" multiple
+        class="mt-2 block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500" />
+    </div>
+    <div id="csvInputWrap" class="hidden">
+      <label class="text-sm text-slate-300 font-medium">Upload a CSV file</label>
+      <input id="csvInput" type="file" accept=".csv,text/csv"
+        class="mt-2 block w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500" />
+      <p class="text-xs text-slate-400 mt-2 leading-relaxed">
+        Two columns: <span class="font-mono text-slate-300">sku</span> and <span class="font-mono text-slate-300">link</span> (a header row is recommended but optional).
+        Each image is processed through the studio pipeline and renamed using the SKU from your file — no guessing.
+      </p>
+      <pre class="mt-2 text-xs bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-400 overflow-x-auto">sku,link
+SHOE-001,https://example.com/a.jpg
+SHOE-002,https://example.com/b.png</pre>
+      <div id="csvSummary" class="text-xs text-emerald-300 mt-2"></div>
+    </div>
+    <!-- Output controls -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-800">
+      <div>
+        <label class="text-xs text-slate-300 font-medium">Output format</label>
+        <select id="fmtSel" class="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 p-2 text-sm">
+          <option value="image/png">PNG (lossless, keeps transparency)</option>
+          <option value="image/jpeg">JPEG (smaller, white background)</option>
+          <option value="image/webp">WebP (smallest, modern)</option>
+        </select>
+      </div>
+      <div id="qualityWrap">
+        <label class="text-xs text-slate-300 font-medium">Quality <span id="qualityVal" class="text-slate-500">92%</span></label>
+        <input id="qualitySel" type="range" min="50" max="100" value="92" class="mt-3 w-full accent-indigo-500" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-300 font-medium inline-flex items-center gap-1">
+          Fit
+          <span class="relative group cursor-help text-slate-500">ⓘ
+            <span class="hidden group-hover:block absolute left-0 top-5 z-10 w-64 p-3 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-300 normal-case font-normal leading-relaxed">
+              <b class="text-amber-300">Contain</b> — whole product fits inside the frame with margins. Best for packshots.<br>
+              <b class="text-amber-300">Cover</b> — fills the frame, may crop edges. Best for uniform grids.<br>
+              <b class="text-amber-300">Stretch</b> — forces exact fill, distorts. Only if the ratio already matches.
+            </span>
+          </span>
+        </label>
+        <select id="fitSel" class="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 p-2 text-sm">
+          <option value="contain">Contain (margins, no crop)</option>
+          <option value="cover">Cover (fill, may crop)</option>
+          <option value="stretch">Stretch (exact fill)</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex gap-3">
+      <button id="runBtn" class="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium text-white">Run Pipeline</button>
+      <button id="downloadBtn" disabled class="px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed">Download ZIP</button>
+    </div>
+  </section>
+
+  <!-- Queue ledger -->
+  <section class="rounded-xl border border-slate-700 bg-slate-900/60 overflow-hidden">
+    <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+      <h2 class="font-semibold text-white">Queue Monitoring Ledger</h2>
+      <span id="ledgerCount" class="text-xs text-slate-400">0 items</span>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-slate-400 text-xs uppercase border-b border-slate-800">
+          <tr>
+            <th class="text-left px-6 py-3">Preview</th>
+            <th class="text-left px-6 py-3">Source</th>
+            <th class="text-left px-6 py-3">SKU</th>
+            <th class="text-left px-6 py-3">Status</th>
+            <th class="text-left px-6 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="ledgerBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- Lightbox: zoom/pan inspection of a result -->
+<div id="lightbox" class="hidden fixed inset-0 z-40 bg-black/85 backdrop-blur-sm items-center justify-center">
+  <div class="absolute top-4 right-4 flex items-center gap-2 z-50">
+    <button id="lbZoomOut" class="w-9 h-9 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white text-lg">−</button>
+    <span id="lbZoomLbl" class="px-2 text-sm text-slate-200 tabular-nums">100%</span>
+    <button id="lbZoomIn" class="w-9 h-9 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white text-lg">+</button>
+    <button id="lbResetBtn" class="px-3 h-9 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white text-sm">Reset</button>
+    <button id="lbClose" class="w-9 h-9 rounded-lg bg-slate-800/80 hover:bg-slate-700 border border-slate-600 text-white text-lg">✕</button>
+  </div>
+  <div id="lbCaption" class="absolute top-4 left-4 z-50 text-sm text-slate-300 font-mono"></div>
+  <div id="lbWrap" class="canvas-checker w-[80vw] h-[80vh] overflow-hidden flex items-center justify-center cursor-grab rounded-xl">
+    <img id="lbImg" class="max-w-none select-none pointer-events-none" draggable="false" />
+  </div>
+  <div class="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs text-slate-400">Scroll to zoom · drag to pan · Esc to close</div>
+</div>
+
+<!-- Settings slide-out -->
+<div id="settingsPanel" class="fixed inset-y-0 right-0 w-80 bg-slate-900 border-l border-slate-700 translate-x-full transition-transform z-30 p-6 space-y-4">
+  <div class="flex items-center justify-between">
+    <h3 class="font-semibold text-white">API Configuration</h3>
+    <button id="closeSettings" class="text-slate-400 hover:text-white">✕</button>
+  </div>
+  <p class="text-xs text-slate-400">Targets are stored locally in your browser. Secret keys live in Netlify env vars (OPENAI_API_KEY, FAL_API_KEY), never here.</p>
+  <div>
+    <label class="text-xs text-slate-300">API Base Path</label>
+    <input id="apiBase" class="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 p-2 text-sm" value="/api" />
+  </div>
+  <div>
+    <label class="text-xs text-slate-300">Fal Poll Interval (ms)</label>
+    <input id="pollInterval" type="number" class="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 p-2 text-sm" value="2500" />
+  </div>
+  <button id="saveSettings" class="w-full px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm">Save</button>
+</div>
+
+<script>
+// ===================== Config / state =====================
+const SKU_REGEX = /(SKU-[A-Z0-9]+|[A-Z]{2,4}-\d{3,6})/i;
+const TARGET = 500;       // canvas px
+const MARGIN = 30;        // uniform item margin
+const SHADOW_OPACITY = 0.12;
+const SHADOW_SHIFT = 14;
+
+// ===================== Output controls =====================
+const fmtSel = document.getElementById("fmtSel");
+const fitSel = document.getElementById("fitSel");
+const qualitySel = document.getElementById("qualitySel");
+const qualityVal = document.getElementById("qualityVal");
+const qualityWrap = document.getElementById("qualityWrap");
+
+function syncQualityVisibility() {
+  // Quality only applies to lossy formats.
+  const lossy = fmtSel.value === "image/jpeg" || fmtSel.value === "image/webp";
+  qualityWrap.style.opacity = lossy ? "1" : "0.4";
+  qualitySel.disabled = !lossy;
+}
+fmtSel.addEventListener("change", syncQualityVisibility);
+qualitySel.addEventListener("input", () => { qualityVal.textContent = qualitySel.value + "%"; });
+syncQualityVisibility();
+
+function outputFormat() { return fmtSel.value; }
+function outputQuality() { return Number(qualitySel.value) / 100; }
+function outputExt() {
+  return { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" }[fmtSel.value] || "png";
+}
+// Encode a canvas to the chosen format. JPEG has no alpha, so we flatten onto
+// white first; PNG/WebP keep transparency.
+function encodeCanvas(canvas) {
+  const fmt = outputFormat();
+  if (fmt === "image/jpeg") {
+    const flat = document.createElement("canvas");
+    flat.width = canvas.width; flat.height = canvas.height;
+    const fctx = flat.getContext("2d");
+    fctx.fillStyle = "#ffffff";
+    fctx.fillRect(0, 0, flat.width, flat.height);
+    fctx.drawImage(canvas, 0, 0);
+    return flat.toDataURL(fmt, outputQuality());
+  }
+  return canvas.toDataURL(fmt, fmt === "image/webp" ? outputQuality() : undefined);
+}
+
+let settings = {
+  apiBase: localStorage.getItem("apiBase") || "/api",
+  pollInterval: parseInt(localStorage.getItem("pollInterval") || "2500", 10),
+};
+document.getElementById("apiBase").value = settings.apiBase;
+document.getElementById("pollInterval").value = settings.pollInterval;
+
+let ledger = [];   // global manifest of operations
+let zipBlobReady = null;
+
+// ===================== Settings UI =====================
+const panel = document.getElementById("settingsPanel");
+document.getElementById("settingsBtn").onclick = () => panel.classList.remove("translate-x-full");
+document.getElementById("closeSettings").onclick = () => panel.classList.add("translate-x-full");
+document.getElementById("saveSettings").onclick = () => {
+  settings.apiBase = document.getElementById("apiBase").value.trim() || "/api";
+  settings.pollInterval = parseInt(document.getElementById("pollInterval").value, 10) || 2500;
+  localStorage.setItem("apiBase", settings.apiBase);
+  localStorage.setItem("pollInterval", settings.pollInterval);
+  panel.classList.add("translate-x-full");
+};
+
+// ===================== Health check =====================
+document.getElementById("healthBtn").onclick = async () => {
+  const banner = document.getElementById("healthBanner");
+  banner.className = "rounded-xl border p-4 text-sm border-slate-700 bg-slate-900/60 text-slate-300";
+  banner.classList.remove("hidden");
+  banner.textContent = "Checking keys against Fal and OpenAI…";
+
+  try {
+    const data = await callApi("health", { deep: true }, 0);
+
+    // For each key: present? and (if present) does it actually authenticate?
+    // valid === true → works, false → rejected, null → couldn't verify (network)
+    function lineFor(name, present, valid) {
+      if (!present) return { icon: "✗", text: `${name} <b>missing</b>`, good: false };
+      if (valid === false) return { icon: "✗", text: `${name} present but <b>rejected (invalid key)</b>`, good: false };
+      if (valid === null) return { icon: "?", text: `${name} present, couldn't verify (network)`, good: true };
+      return { icon: "✓", text: `${name} valid`, good: true };
+    }
+
+    const falLine = lineFor("FAL_API_KEY", data.fal_configured, data.fal_valid);
+    const oaiLine = lineFor("OPENAI_API_KEY", data.openai_configured, data.openai_valid);
+
+    // OpenAI is only needed for the vision SKU fallback. Fal is required for
+    // Modes 2 & 3. So Fal failing is critical; OpenAI failing is a warning.
+    const falOk = falLine.good;
+    const allGood = falOk && oaiLine.good;
+
+    banner.className =
+      "rounded-xl border p-4 text-sm " +
+      (allGood
+        ? "border-emerald-700 bg-emerald-950/40 text-emerald-200"
+        : falOk
+          ? "border-amber-700 bg-amber-950/40 text-amber-200"
+          : "border-red-700 bg-red-950/40 text-red-200");
+
+    banner.innerHTML =
+      `<div class="font-medium mb-1">Function reachable.</div>` +
+      `<div>${falLine.icon} ${falLine.text}</div>` +
+      `<div>${oaiLine.icon} ${oaiLine.text}</div>` +
+      (allGood
+        ? `<div class="mt-1 opacity-80">All set — ready to run.</div>`
+        : !falOk
+          ? `<div class="mt-2 opacity-90">Fal is required for background removal. Fix <code>FAL_API_KEY</code> in Netlify → Environment variables, then <b>Trigger deploy → Deploy site</b>.</div>`
+          : `<div class="mt-2 opacity-90">OpenAI is only used for the vision SKU fallback. Modes work without it if your filenames contain SKUs; otherwise fix <code>OPENAI_API_KEY</code> and redeploy.</div>`);
+  } catch (e) {
+    banner.className = "rounded-xl border p-4 text-sm border-red-700 bg-red-950/40 text-red-200";
+    banner.innerHTML =
+      `<div class="font-medium mb-1">Couldn't reach the function.</div>` +
+      `<div class="opacity-90">Got: ${e.message}</div>` +
+      `<div class="mt-2 opacity-90">Check that <code>${settings.apiBase}</code> is correct and that the deploy finished. ` +
+      `A 404 usually means the <code>netlify/functions/api.js</code> path is wrong.</div>`;
+  }
+};
+function currentMode() {
+  return document.querySelector('input[name="mode"]:checked').value;
+}
+function syncInputs() {
+  const m = currentMode();
+  const usesFiles = m === "1" || m === "3";
+  const usesCsv = m === "4";
+  const usesLinks = m === "2";
+  document.getElementById("fileInputWrap").classList.toggle("hidden", !usesFiles);
+  document.getElementById("linkInputWrap").classList.toggle("hidden", !usesLinks);
+  document.getElementById("csvInputWrap").classList.toggle("hidden", !usesCsv);
+}
+document.querySelectorAll('input[name="mode"]').forEach(r => r.onchange = syncInputs);
+syncInputs();
+
+// ===================== CSV parsing =====================
+// Minimal, dependency-free CSV reader that handles quoted fields and commas
+// inside quotes. Expects columns for SKU and link; tolerates header in any
+// order, or no header at all (then assumes column order: sku, link).
+let csvRows = []; // [{ sku, link }]
+
+function parseCsv(text) {
+  const rows = [];
+  let field = "", row = [], inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(field); field = "";
+        if (row.some(v => v.trim() !== "")) rows.push(row);
+        row = [];
+      } else field += c;
+    }
+  }
+  if (field !== "" || row.length) { row.push(field); if (row.some(v => v.trim() !== "")) rows.push(row); }
+  return rows;
+}
+
+function csvToRecords(text) {
+  const rows = parseCsv(text);
+  if (!rows.length) return [];
+  // Detect header by looking for known column names in the first row.
+  const first = rows[0].map(s => s.trim().toLowerCase());
+  const skuIdx = first.findIndex(h => ["sku", "code", "style", "ref"].includes(h));
+  const linkIdx = first.findIndex(h => ["link", "url", "image", "image_url", "image link"].includes(h));
+  let dataRows, si, li;
+  if (skuIdx !== -1 && linkIdx !== -1) {
+    dataRows = rows.slice(1); si = skuIdx; li = linkIdx;
+  } else {
+    // No recognizable header → assume first column = sku, second = link.
+    dataRows = rows; si = 0; li = 1;
+  }
+  return dataRows
+    .map(r => ({ sku: (r[si] || "").trim().replace(/[\/\\:*?"<>|]/g, "-"), link: (r[li] || "").trim() }))
+    .filter(r => r.sku && r.link);
+}
+
+const csvInput = document.getElementById("csvInput");
+if (csvInput) {
+  csvInput.addEventListener("change", async () => {
+    const f = csvInput.files?.[0];
+    const summary = document.getElementById("csvSummary");
+    if (!f) { csvRows = []; summary.textContent = ""; return; }
+    try {
+      const text = await f.text();
+      csvRows = csvToRecords(text);
+      summary.textContent = csvRows.length
+        ? `✓ ${csvRows.length} row${csvRows.length > 1 ? "s" : ""} ready (SKU + link pairs).`
+        : "No valid rows found. Check that the file has sku and link columns.";
+      summary.className = "text-xs mt-2 " + (csvRows.length ? "text-emerald-300" : "text-amber-300");
+    } catch (e) {
+      csvRows = [];
+      summary.textContent = "Could not read the file: " + e.message;
+      summary.className = "text-xs mt-2 text-red-300";
+    }
+  });
+}
+
+// ===================== Ledger rendering =====================
+const STATUS_COLORS = {
+  "Pending": "#64748b",
+  "Extracting SKU": "#eab308",
+  "Removing BG": "#3b82f6",
+  "Generating Studio Shadows": "#8b5cf6",
+  "Completed": "#22c55e",
+  "Failed": "#ef4444",
+};
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Maps each status to an approximate completion fraction for the progress bar.
+const STATUS_PROGRESS = {
+  "Pending": 0.08,
+  "Extracting SKU": 0.30,
+  "Removing BG": 0.55,
+  "Generating Studio Shadows": 0.85,
+  "Completed": 1,
+  "Failed": 1,
+};
+
+function renderLedger() {
+  const body = document.getElementById("ledgerBody");
+  body.innerHTML = "";
+  ledger.forEach(item => {
+    const tr = document.createElement("tr");
+    tr.className = "border-b border-slate-800/60";
+    const color = STATUS_COLORS[item.status] || "#64748b";
+    const failed = item.status === "Failed";
+    const completed = item.status === "Completed";
+    const active = !failed && !completed;
+    const pct = Math.round((STATUS_PROGRESS[item.status] ?? 0) * 100);
+    const statusCell = failed && item.error
+      ? `<span title="${escapeHtml(item.error)}" class="cursor-help underline decoration-dotted">${item.status}</span>`
+      : `<span>${item.status}</span>`;
+    const clickable = completed && item.preview ? `data-inspect="${item.id}" class="w-12 h-12 rounded canvas-checker overflow-hidden flex items-center justify-center cursor-zoom-in"` 
+      : `class="w-12 h-12 rounded canvas-checker overflow-hidden flex items-center justify-center"`;
+    tr.innerHTML = `
+      <td class="px-6 py-3">
+        <div ${clickable}>
+          ${item.preview ? `<img src="${escapeHtml(item.preview)}" class="w-full h-full object-contain"/>` : ""}
+        </div>
+      </td>
+      <td class="px-6 py-3 text-slate-300 font-mono text-xs truncate max-w-xs">${escapeHtml(item.source)}</td>
+      <td class="px-6 py-3 font-mono">${escapeHtml(item.sku) || "—"}</td>
+      <td class="px-6 py-3 min-w-[180px]">
+        <span class="inline-flex items-center gap-2">
+          <span class="status-dot" style="background:${color}"></span>
+          ${statusCell}
+        </span>
+        <div class="mt-1.5 h-1 w-full rounded-full bg-slate-800 overflow-hidden">
+          <div class="h-full rounded-full ${active ? "animate-pulse" : ""}" style="width:${pct}%;background:${color};transition:width .4s ease"></div>
+        </div>
+      </td>
+      <td class="px-6 py-3 whitespace-nowrap">
+        ${completed && item.preview ? `<button data-inspect="${item.id}" class="px-3 py-1 text-xs rounded-md bg-slate-700 hover:bg-slate-600">🔍 Inspect</button>` : ""}
+        ${failed ? `<button data-retry="${item.id}" class="px-3 py-1 text-xs rounded-md bg-slate-700 hover:bg-slate-600">↻ Retry</button>` : ""}
+      </td>`;
+    body.appendChild(tr);
+  });
+  body.querySelectorAll("[data-retry]").forEach(btn => {
+    btn.onclick = () => retryItem(Number(btn.getAttribute("data-retry")));
+  });
+  body.querySelectorAll("[data-inspect]").forEach(el => {
+    el.onclick = () => {
+      const item = ledger.find(i => i.id === Number(el.getAttribute("data-inspect")));
+      if (item && item.preview) openLightbox(item.preview, item.filename || item.sku || "preview");
+    };
+  });
+  document.getElementById("ledgerCount").textContent = `${ledger.length} items`;
+}
+
+// Retry a single failed item without re-running the whole batch.
+async function retryItem(id) {
+  const item = ledger.find(i => i.id === id);
+  if (!item || item.status !== "Failed") return;
+  item.error = null;
+  setStatus(item, "Pending");
+  await processItem(item);
+  // Rebuild the ZIP so a now-completed item is included in the download.
+  await buildZip();
+  document.getElementById("downloadBtn").disabled =
+    !ledger.some(i => i.status === "Completed");
+}
+function setStatus(item, status, extra) {
+  item.status = status;
+  if (extra) Object.assign(item, extra);
+  renderLedger();
+}
+
+// ===================== API helpers =====================
+async function callApi(action, payload, retries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(`${settings.apiBase}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `API ${action} failed`);
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+// Poll via the server-side proxy, which holds the FAL_KEY. The Fal status
+// and result endpoints require auth, so the browser cannot hit them directly.
+// Capped attempts prevent a stuck job from looping forever.
+async function pollFal(requestId) {
+  const maxAttempts = Math.ceil(180000 / settings.pollInterval); // ~3 min ceiling
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, settings.pollInterval));
+    const data = await callApi("poll-status", { request_id: requestId }, 0);
+    if (data.status === "COMPLETED") return data.cutoutUrl;
+    if (data.status === "FAILED") throw new Error(data.error || "Fal processing failed");
+    // IN_QUEUE / IN_PROGRESS → keep looping
+  }
+  throw new Error("Fal polling timed out");
+}
+
+// ===================== SKU resolution (Billing Shield) =====================
+async function resolveSku(item, dataUri) {
+  // 1. Cheap path: filename / source regex first.
+  const m = item.source.match(SKU_REGEX);
+  if (m) return m[1].toUpperCase();
+
+  // 2. Fallback: vision query only when regex yields nothing.
+  setStatus(item, "Extracting SKU");
+  try {
+    const { sku } = await callApi("extract-sku", { dataUri });
+    if (sku && sku !== "UNKNOWN") return sku.toUpperCase();
+  } catch (e) { /* fall through */ }
+  return `ASSET-${String(item.id).padStart(4, "0")}`;
+}
+
+// ===================== Canvas shadow engine =====================
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Image load failed"));
+    img.src = src;
+  });
+}
+
+// Alpha-channel bounding box (getbbox equivalent).
+// Edge-converging scan: walk inward from each side and stop as soon as that
+// edge hits a non-transparent row/column. Far cheaper than a full nested
+// scan on large (2048px+) cutouts, which would freeze the tab.
+function getBoundingBox(ctx, w, h) {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const A = 10; // alpha threshold
+  const op = (x, y) => data[(y * w + x) * 4 + 3] > A;
+
+  let top = 0, bottom = h - 1, left = 0, right = w - 1;
+  let found = false;
+
+  scanTop:
+  for (; top < h; top++) for (let x = 0; x < w; x++) if (op(x, top)) { found = true; break scanTop; }
+  if (!found) return { x: 0, y: 0, w, h };
+
+  scanBottom:
+  for (; bottom > top; bottom--) for (let x = 0; x < w; x++) if (op(x, bottom)) break scanBottom;
+
+  scanLeft:
+  for (; left < w; left++) for (let y = top; y <= bottom; y++) if (op(left, y)) break scanLeft;
+
+  scanRight:
+  for (; right > left; right--) for (let y = top; y <= bottom; y++) if (op(right, y)) break scanRight;
+
+  return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+}
+
+// Produces a 500x500 PNG data URL with dual shadow layers.
+async function renderPackshot(cutoutDataUri) {
+  const img = await loadImage(cutoutDataUri);
+
+  // Stage the raw cutout to measure its true alpha bounds.
+  const stage = document.createElement("canvas");
+  stage.width = img.naturalWidth; stage.height = img.naturalHeight;
+  const sctx = stage.getContext("2d");
+  sctx.drawImage(img, 0, 0);
+  const bbox = getBoundingBox(sctx, stage.width, stage.height);
+
+  // Scale the bounded subject according to the chosen fit mode.
+  // contain → fits inside the margin zone (no crop).
+  // cover   → fills the full canvas, cropping overflow.
+  // stretch → forces exact fill, ignoring aspect ratio.
+  const fit = fitSel.value;
+  let drawW, drawH, dx, dy;
+  if (fit === "stretch") {
+    drawW = TARGET; drawH = TARGET; dx = 0; dy = 0;
+  } else if (fit === "cover") {
+    const scale = Math.max(TARGET / bbox.w, TARGET / bbox.h);
+    drawW = bbox.w * scale; drawH = bbox.h * scale;
+    dx = (TARGET - drawW) / 2; dy = (TARGET - drawH) / 2;
+  } else { // contain
+    const zone = TARGET - MARGIN * 2;
+    const scale = Math.min(zone / bbox.w, zone / bbox.h);
+    drawW = bbox.w * scale; drawH = bbox.h * scale;
+    dx = (TARGET - drawW) / 2; dy = (TARGET - drawH) / 2;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = TARGET; canvas.height = TARGET;
+  const ctx = canvas.getContext("2d");
+
+  // White studio backdrop.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, TARGET, TARGET);
+
+  // Shadow layers only make sense in "contain" mode, where the subject sits
+  // inside the frame with room for a grounding shadow. In cover/stretch the
+  // subject fills the canvas, so shadows would be clipped or invisible.
+  if (fit === "contain") {
+    // --- Layer A: Grounding Contact Pod Ring ---
+    const footY = dy + drawH;
+    const ellW = drawW * 0.78;
+    const ellH = drawH * 0.10;
+    const ellCx = TARGET / 2;
+    const ellCy = Math.min(footY - ellH * 0.3, TARGET - MARGIN * 0.5);
+    const grad = ctx.createRadialGradient(ellCx, ellCy, 1, ellCx, ellCy, ellW / 2);
+    grad.addColorStop(0, "rgba(0,0,0,0.35)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.save();
+    ctx.translate(ellCx, ellCy);
+    ctx.scale(1, ellH / (ellW / 2) || 0.2);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, ellW / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // --- Layer B: Ambient Soft Box Dispersion ---
+    const silhouette = document.createElement("canvas");
+    silhouette.width = TARGET; silhouette.height = TARGET;
+    const silCtx = silhouette.getContext("2d");
+    silCtx.drawImage(img, bbox.x, bbox.y, bbox.w, bbox.h, dx, dy, drawW, drawH);
+    silCtx.globalCompositeOperation = "source-in";
+    silCtx.fillStyle = "#000000";
+    silCtx.fillRect(0, 0, TARGET, TARGET);
+
+    ctx.save();
+    ctx.globalAlpha = SHADOW_OPACITY;
+    ctx.filter = "blur(8px)";
+    ctx.drawImage(silhouette, 0, SHADOW_SHIFT);
+    ctx.restore();
+    ctx.filter = "none";
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Subject on top ---
+  ctx.drawImage(img, bbox.x, bbox.y, bbox.w, bbox.h, dx, dy, drawW, drawH);
+
+  return encodeCanvas(canvas);
+}
+
+// ===================== Per-item processing =====================
+async function processItem(item) {
+  try {
+    const mode = currentMode();
+
+    // Acquire base64 source.
+    let dataUri;
+    if (item.file) {
+      dataUri = await fileToDataUri(item.file);
+    } else {
+      setStatus(item, "Pending");
+      const { dataUri: proxied } = await callApi("proxy-image", { url: item.source });
+      dataUri = proxied;
+    }
+    item.preview = dataUri;
+    renderLedger();
+
+    // SKU: use the value from the CSV if provided, otherwise detect it
+    // (filename/URL regex first, vision fallback).
+    if (item.presetSku) {
+      item.sku = item.presetSku;
+      renderLedger();
+    } else {
+      item.sku = await resolveSku(item, dataUri);
+    }
+
+    // Mode 1: rename only — keep the original file/format untouched.
+    if (mode === "1") {
+      const origExt = item.file ? (item.file.name.split(".").pop() || "png") : "png";
+      item.output = dataUri;
+      item.filename = `${item.sku}.${origExt}`;
+      setStatus(item, "Completed");
+      return;
+    }
+
+    // Modes 2, 3 & 4: remove BG via Fal, then build packshot.
+    setStatus(item, "Removing BG");
+    const submit = await callApi("submit-birefnet", { imageUrl: dataUri });
+    const cutoutUrl = await pollFal(submit.request_id);
+
+    // Proxy the cutout to avoid tainted-canvas, then render shadows.
+    const { dataUri: cutoutData } = await callApi("proxy-image", { url: cutoutUrl });
+    setStatus(item, "Generating Studio Shadows");
+    const packshot = await renderPackshot(cutoutData);
+
+    item.output = packshot;
+    item.preview = packshot;
+    item.filename = `${item.sku}.${outputExt()}`;
+    setStatus(item, "Completed");
+  } catch (err) {
+    item.error = err.message;
+    setStatus(item, "Failed");
+  }
+}
+
+function fileToDataUri(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error("File read failed"));
+    fr.readAsDataURL(file);
+  });
+}
+
+// ===================== Run pipeline =====================
+// Bounded parallel pool. 6 keeps Fal runners busy while leaving the browser's
+// per-origin connections and main thread responsive. Reused for full runs and
+// targeted retries.
+async function runPool(items, concurrency = 6) {
+  const queue = [...items];
+  async function worker() {
+    while (queue.length) {
+      const item = queue.shift();
+      if (item) await processItem(item);
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+}
+
+document.getElementById("runBtn").onclick = async () => {
+  const mode = currentMode();
+  ledger = [];
+  zipBlobReady = null;
+  document.getElementById("downloadBtn").disabled = true;
+
+  let idCounter = 0;
+  if (mode === "1" || mode === "3") {
+    const files = Array.from(document.getElementById("fileInput").files || []);
+    if (!files.length) { alert("Select at least one file."); return; }
+    files.forEach(f => ledger.push({ id: ++idCounter, source: f.name, file: f, status: "Pending", sku: "" }));
+  } else if (mode === "4") {
+    if (!csvRows.length) { alert("Upload a CSV with sku and link columns first."); return; }
+    // presetSku tells processItem to skip SKU detection and use this value.
+    csvRows.forEach(r => ledger.push({
+      id: ++idCounter, source: r.link, presetSku: r.sku, status: "Pending", sku: ""
+    }));
+  } else {
+    const links = document.getElementById("linkInput").value.split("\n").map(s => s.trim()).filter(Boolean);
+    if (!links.length) { alert("Enter at least one link."); return; }
+    links.forEach(l => ledger.push({ id: ++idCounter, source: l, status: "Pending", sku: "" }));
+  }
+
+  // Modes 2, 3 & 4 each fire a paid Fal background-removal job per item.
+  // Confirm before large or accidental batches.
+  const billable = (mode === "2" || mode === "3" || mode === "4");
+  if (billable && ledger.length >= 10) {
+    const ok = confirm(
+      `This will run ${ledger.length} background-removal jobs on Fal, ` +
+      `each of which is billed to your account. Continue?`
+    );
+    if (!ok) { ledger = []; renderLedger(); return; }
+  }
+  renderLedger();
+
+  const runBtn = document.getElementById("runBtn");
+  runBtn.disabled = true;
+  runBtn.textContent = "Processing…";
+  runBtn.classList.add("opacity-60", "cursor-not-allowed");
+  try {
+    await runPool(ledger, 6);
+    await buildZip();
+    document.getElementById("downloadBtn").disabled = false;
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Pipeline";
+    runBtn.classList.remove("opacity-60", "cursor-not-allowed");
+  }
+};
+
+// ===================== ZIP + CSV manifest =====================
+function buildManifestCsv() {
+  const rows = [["id", "source", "sku", "filename", "status", "error"]];
+  ledger.forEach(i => {
+    rows.push([
+      i.id,
+      i.source,
+      i.sku || "",
+      i.filename || "",
+      i.status,
+      i.error || "",
+    ]);
+  });
+  return rows.map(r =>
+    r.map(c => {
+      const s = String(c).replace(/"/g, '""');
+      return /[",\n]/.test(s) ? `"${s}"` : s;
+    }).join(",")
+  ).join("\n");
+}
+
+async function buildZip() {
+  const zip = new JSZip();
+  const used = {};
+  ledger.forEach(item => {
+    if (item.status !== "Completed" || !item.output) return;
+    let name = item.filename || `${item.sku || "asset"}.png`;
+    // Guard against duplicate SKUs collapsing files into one entry.
+    if (used[name]) {
+      const dot = name.lastIndexOf(".");
+      const suffixed = `${name.slice(0, dot)}-${used[name] + 1}${name.slice(dot)}`;
+      used[name] = used[name] + 1;
+      name = suffixed;
+    } else {
+      used[name] = 1;
+    }
+    const base64 = item.output.split(",")[1];
+    zip.file(name, base64, { base64: true });
+  });
+  zip.file("manifest.csv", buildManifestCsv());
+  zipBlobReady = await zip.generateAsync({ type: "blob" });
+}
+
+// ===================== Lightbox (zoom / pan) =====================
+const lb = document.getElementById("lightbox");
+const lbImg = document.getElementById("lbImg");
+const lbWrap = document.getElementById("lbWrap");
+const lbZoomLbl = document.getElementById("lbZoomLbl");
+const lbCaption = document.getElementById("lbCaption");
+let lbScale = 1, lbOffX = 0, lbOffY = 0, lbDragging = false, lbDragX = 0, lbDragY = 0;
+
+function lbApply() {
+  lbImg.style.transform = `translate(${lbOffX}px, ${lbOffY}px) scale(${lbScale})`;
+  lbZoomLbl.textContent = Math.round(lbScale * 100) + "%";
+}
+function lbZoom(d) { lbScale = Math.min(8, Math.max(0.25, lbScale + d)); lbApply(); }
+function lbReset() { lbScale = 1; lbOffX = 0; lbOffY = 0; lbApply(); }
+
+function openLightbox(src, caption) {
+  lbImg.src = src;
+  lbCaption.textContent = caption || "";
+  lbReset();
+  lb.classList.remove("hidden");
+  lb.classList.add("flex");
+}
+function closeLightbox() {
+  lb.classList.add("hidden");
+  lb.classList.remove("flex");
+  lbImg.src = "";
+}
+
+document.getElementById("lbZoomIn").onclick = () => lbZoom(0.25);
+document.getElementById("lbZoomOut").onclick = () => lbZoom(-0.25);
+document.getElementById("lbResetBtn").onclick = lbReset;
+document.getElementById("lbClose").onclick = closeLightbox;
+lb.addEventListener("click", e => { if (e.target === lb) closeLightbox(); });
+
+lbWrap.addEventListener("wheel", e => {
+  e.preventDefault();
+  lbZoom(e.deltaY < 0 ? 0.2 : -0.2);
+}, { passive: false });
+
+lbWrap.addEventListener("mousedown", e => {
+  lbDragging = true;
+  lbDragX = e.clientX - lbOffX;
+  lbDragY = e.clientY - lbOffY;
+  lbWrap.style.cursor = "grabbing";
+});
+window.addEventListener("mousemove", e => {
+  if (!lbDragging) return;
+  lbOffX = e.clientX - lbDragX;
+  lbOffY = e.clientY - lbDragY;
+  lbApply();
+});
+window.addEventListener("mouseup", () => { lbDragging = false; lbWrap.style.cursor = "grab"; });
+
+document.addEventListener("keydown", e => {
+  if (lb.classList.contains("hidden")) return;
+  if (e.key === "Escape") closeLightbox();
+  if (e.key === "+" || e.key === "=") lbZoom(0.25);
+  if (e.key === "-") lbZoom(-0.25);
+  if (e.key === "0") lbReset();
+});
+
+document.getElementById("downloadBtn").onclick = () => {
+  if (!zipBlobReady) return;
+  const url = URL.createObjectURL(zipBlobReady);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `packshots-${Date.now()}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+</script>
+</body>
+</html>
