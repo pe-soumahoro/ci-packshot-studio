@@ -9,7 +9,7 @@
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FAL_API_KEY = process.env.FAL_API_KEY;
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB ceiling for proxy fetches
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4MB; base64 in JSON must fit Netlify's ~6MB response limit
 const FETCH_TIMEOUT_MS = 15000;
 
 const CORS_HEADERS = {
@@ -156,10 +156,10 @@ async function submitBirefnet(payload) {
     },
     body: JSON.stringify({
       image_url: imageUrl,
-      model: "General Use (Heavy)",      // accurate edges for packshots
-      operating_resolution: "2048x2048", // valid v2 enum value
+      model: "General Use (Light)",       // Fal's recommended default for most cases
+      operating_resolution: "1024x1024",  // documented default; fast and reliable
       refine_foreground: true,
-      output_format: "png",              // preserve alpha for the canvas
+      output_format: "png",               // preserve alpha for the canvas
     }),
   });
 
@@ -176,35 +176,46 @@ async function submitBirefnet(payload) {
 }
 
 // ---------- poll-status ----------
-// Browser calls this with the request_id; we attach FAL_KEY server-side.
-// Returns { status, ... } and, when COMPLETED, the resolved cutout url.
+// Browser calls this with the status_url and response_url that Fal returned at
+// submit time (preferred — always correct), or with a request_id as fallback.
+// IMPORTANT: the model subpath (/v2) is used when SUBMITTING but must NOT be
+// included in the status/result URLs. Using Fal's returned urls avoids this
+// pitfall entirely.
 async function pollStatus(payload) {
   if (!FAL_API_KEY) return json(500, { error: "FAL_API_KEY not configured" });
-  const { request_id } = payload;
-  if (!request_id) return json(400, { error: "Missing request_id" });
-
-  const base = `https://queue.fal.run/fal-ai/birefnet/v2/requests/${encodeURIComponent(request_id)}`;
   const authHeader = { Authorization: `Key ${FAL_API_KEY}` };
 
-  const stResp = await fetchWithTimeout(`${base}/status`, { headers: authHeader });
+  let statusUrl = payload.status_url;
+  let responseUrl = payload.response_url;
+
+  // Fallback: reconstruct from request_id, dropping the /v2 subpath which the
+  // status/result endpoints do not accept.
+  if (!statusUrl || !responseUrl) {
+    const rid = payload.request_id;
+    if (!rid) return json(400, { error: "Missing status_url/response_url or request_id" });
+    const base = `https://queue.fal.run/fal-ai/birefnet/requests/${encodeURIComponent(rid)}`;
+    statusUrl = `${base}/status`;
+    responseUrl = base;
+  }
+
+  const stResp = await fetchWithTimeout(statusUrl, { headers: authHeader });
   if (!stResp.ok) {
     const errText = await stResp.text();
     return json(stResp.status, { error: `Fal status error: ${errText}` });
   }
   const status = await stResp.json();
 
-  // A failed run surfaces an `error` field on the COMPLETED status payload.
   if (status.status === "COMPLETED") {
     if (status.error) {
       return json(200, { status: "FAILED", error: status.error });
     }
-    const resResp = await fetchWithTimeout(base, { headers: authHeader });
+    const resResp = await fetchWithTimeout(responseUrl, { headers: authHeader });
     if (!resResp.ok) {
       const errText = await resResp.text();
       return json(resResp.status, { error: `Fal result error: ${errText}` });
     }
     const result = await resResp.json();
-    const cutoutUrl = result.images?.[0]?.url || result.image?.url || null;
+    const cutoutUrl = result.image?.url || result.images?.[0]?.url || null;
     if (!cutoutUrl) return json(200, { status: "FAILED", error: "No cutout in result" });
     return json(200, { status: "COMPLETED", cutoutUrl });
   }

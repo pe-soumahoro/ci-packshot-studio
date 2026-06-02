@@ -515,11 +515,15 @@ async function callApi(action, payload, retries = 2) {
 // Poll via the server-side proxy, which holds the FAL_KEY. The Fal status
 // and result endpoints require auth, so the browser cannot hit them directly.
 // Capped attempts prevent a stuck job from looping forever.
-async function pollFal(requestId) {
+async function pollFal(submit) {
   const maxAttempts = Math.ceil(180000 / settings.pollInterval); // ~3 min ceiling
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, settings.pollInterval));
-    const data = await callApi("poll-status", { request_id: requestId }, 0);
+    const data = await callApi("poll-status", {
+      status_url: submit.status_url,
+      response_url: submit.response_url,
+      request_id: submit.request_id,
+    }, 0);
     if (data.status === "COMPLETED") return data.cutoutUrl;
     if (data.status === "FAILED") throw new Error(data.error || "Fal processing failed");
     // IN_QUEUE / IN_PROGRESS → keep looping
@@ -551,6 +555,35 @@ function loadImage(src) {
     img.onerror = () => reject(new Error("Image load failed"));
     img.src = src;
   });
+}
+
+// Downscale a data URI so the payload sent to the serverless function stays
+// well under Netlify's ~6MB request limit (base64 inflates bytes ~33%). Fal's
+// birefnet operates at 1024px, so a ~1600px max dimension loses nothing useful
+// while keeping the POST body small. Returns a JPEG data URI (smaller than PNG
+// for photos; the cutout/alpha is produced later by Fal, not from this copy).
+async function downscaleForUpload(dataUri, maxDim = 1600) {
+  try {
+    const img = await loadImage(dataUri);
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return dataUri;
+    if (Math.max(w, h) <= maxDim) {
+      // Small enough already; only re-encode if the raw data URI is large.
+      if (dataUri.length < 3_000_000) return dataUri;
+    }
+    const scale = Math.min(1, maxDim / Math.max(w, h));
+    const c = document.createElement("canvas");
+    c.width = Math.round(w * scale);
+    c.height = Math.round(h * scale);
+    const ctx = c.getContext("2d");
+    // White matte under transparency so JPEG (no alpha) doesn't go black.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return dataUri; // if anything fails, fall back to the original
+  }
 }
 
 // Alpha-channel bounding box (getbbox equivalent).
@@ -701,8 +734,11 @@ async function processItem(item) {
 
     // Modes 2, 3 & 4: remove BG via Fal, then build packshot.
     setStatus(item, "Removing BG");
-    const submit = await callApi("submit-birefnet", { imageUrl: dataUri });
-    const cutoutUrl = await pollFal(submit.request_id);
+    // Downscale before sending so the request body stays under Netlify's ~6MB
+    // function limit. Large camera/phone photos would otherwise be rejected.
+    const uploadUri = await downscaleForUpload(dataUri);
+    const submit = await callApi("submit-birefnet", { imageUrl: uploadUri });
+    const cutoutUrl = await pollFal(submit);
 
     // Proxy the cutout to avoid tainted-canvas, then render shadows.
     const { dataUri: cutoutData } = await callApi("proxy-image", { url: cutoutUrl });
