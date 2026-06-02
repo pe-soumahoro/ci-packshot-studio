@@ -124,7 +124,9 @@ SHOE-002,https://example.com/b.png</pre>
     </div>
     <div class="flex gap-3">
       <button id="runBtn" class="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium text-white">Run Pipeline</button>
+      <button id="stopBtn" class="hidden px-6 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 font-medium text-white">Stop</button>
       <button id="downloadBtn" disabled class="px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed">Download ZIP</button>
+      <button id="clearBtn" class="px-6 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 font-medium text-white">Clear</button>
     </div>
   </section>
 
@@ -399,6 +401,7 @@ const STATUS_COLORS = {
   "Generating Studio Shadows": "#8b5cf6",
   "Completed": "#22c55e",
   "Failed": "#ef4444",
+  "Stopped": "#94a3b8",
 };
 
 function escapeHtml(s) {
@@ -414,6 +417,7 @@ const STATUS_PROGRESS = {
   "Generating Studio Shadows": 0.85,
   "Completed": 1,
   "Failed": 1,
+  "Stopped": 0,
 };
 
 function renderLedger() {
@@ -425,7 +429,8 @@ function renderLedger() {
     const color = STATUS_COLORS[item.status] || "#64748b";
     const failed = item.status === "Failed";
     const completed = item.status === "Completed";
-    const active = !failed && !completed;
+    const stopped = item.status === "Stopped";
+    const active = !failed && !completed && !stopped;
     const pct = Math.round((STATUS_PROGRESS[item.status] ?? 0) * 100);
     const statusCell = failed && item.error
       ? `<span title="${escapeHtml(item.error)}" class="cursor-help underline decoration-dotted">${item.status}</span>`
@@ -440,7 +445,7 @@ function renderLedger() {
       </td>
       <td class="px-6 py-3 text-slate-300 font-mono text-xs truncate max-w-xs">${escapeHtml(item.source)}</td>
       <td class="px-6 py-3 font-mono">${escapeHtml(item.sku) || "—"}</td>
-      <td class="px-6 py-3 min-w-[180px]">
+      <td class="px-6 py-3 min-w-[180px] max-w-xs">
         <span class="inline-flex items-center gap-2">
           <span class="status-dot" style="background:${color}"></span>
           ${statusCell}
@@ -448,6 +453,7 @@ function renderLedger() {
         <div class="mt-1.5 h-1 w-full rounded-full bg-slate-800 overflow-hidden">
           <div class="h-full rounded-full ${active ? "animate-pulse" : ""}" style="width:${pct}%;background:${color};transition:width .4s ease"></div>
         </div>
+        ${failed && item.error ? `<div class="mt-1.5 text-xs text-red-300 break-words">${escapeHtml(item.error)}</div>` : ""}
       </td>
       <td class="px-6 py-3 whitespace-nowrap">
         ${completed && item.preview ? `<button data-inspect="${item.id}" class="px-3 py-1 text-xs rounded-md bg-slate-700 hover:bg-slate-600">🔍 Inspect</button>` : ""}
@@ -670,8 +676,7 @@ async function processItem(item) {
       dataUri = await fileToDataUri(item.file);
     } else {
       setStatus(item, "Pending");
-      const { dataUri: proxied } = await callApi("proxy-image", { url: item.source });
-      dataUri = proxied;
+      dataUri = await fetchImageDataUri(item.source);
     }
     item.preview = dataUri;
     renderLedger();
@@ -723,7 +728,51 @@ function fileToDataUri(file) {
   });
 }
 
+function blobToDataUri(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error("Blob read failed"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+// Hosts that block server-side fetches (IP allowlist) but are reachable from
+// the user's own browser/network. For these we fetch directly in the browser.
+const BROWSER_FETCH_HOSTS = ["deliveryhero.io", "dhmedia.io", "glovoapp.com"];
+function needsBrowserFetch(url) {
+  try {
+    const h = new URL(url).hostname;
+    return BROWSER_FETCH_HOSTS.some(d => h === d || h.endsWith("." + d));
+  } catch { return false; }
+}
+
+// Fetch a remote image into a data URI. For allowlisted Glovo hosts, try the
+// browser directly first (your network is allowed; Netlify's isn't). Fall back
+// to the server proxy otherwise. A direct fetch only yields a canvas-safe data
+// URI when the host sends permissive CORS headers — which these CDNs do.
+async function fetchImageDataUri(url) {
+  if (needsBrowserFetch(url)) {
+    try {
+      const resp = await fetch(url, { mode: "cors" });
+      if (resp.ok) {
+        const blob = await resp.blob();
+        if (blob.type.startsWith("image/")) return await blobToDataUri(blob);
+      }
+    } catch (e) {
+      // CORS or network failure → fall through to the server proxy.
+    }
+  }
+  const { dataUri } = await callApi("proxy-image", { url });
+  return dataUri;
+}
+
 // ===================== Run pipeline =====================
+// Cancellation flag checked by the worker pool between items. Stopping does
+// not abort the items already in flight (those finish), it just stops the
+// pool from starting any new ones.
+let cancelRequested = false;
+
 // Bounded parallel pool. 6 keeps Fal runners busy while leaving the browser's
 // per-origin connections and main thread responsive. Reused for full runs and
 // targeted retries.
@@ -731,6 +780,7 @@ async function runPool(items, concurrency = 6) {
   const queue = [...items];
   async function worker() {
     while (queue.length) {
+      if (cancelRequested) return;        // stop pulling new work
       const item = queue.shift();
       if (item) await processItem(item);
     }
@@ -738,10 +788,18 @@ async function runPool(items, concurrency = 6) {
   await Promise.all(Array.from({ length: concurrency }, worker));
 }
 
+const stopBtn = document.getElementById("stopBtn");
+stopBtn.onclick = () => {
+  cancelRequested = true;
+  stopBtn.disabled = true;
+  stopBtn.textContent = "Stopping…";
+};
+
 document.getElementById("runBtn").onclick = async () => {
   const mode = currentMode();
   ledger = [];
   zipBlobReady = null;
+  cancelRequested = false;
   document.getElementById("downloadBtn").disabled = true;
 
   let idCounter = 0;
@@ -777,14 +835,24 @@ document.getElementById("runBtn").onclick = async () => {
   runBtn.disabled = true;
   runBtn.textContent = "Processing…";
   runBtn.classList.add("opacity-60", "cursor-not-allowed");
+  stopBtn.classList.remove("hidden");
+  stopBtn.disabled = false;
+  stopBtn.textContent = "Stop";
   try {
     await runPool(ledger, 6);
+    // Mark any items that never started as cancelled (clearer than "Pending").
+    if (cancelRequested) {
+      ledger.forEach(i => { if (i.status === "Pending") i.status = "Stopped"; });
+      renderLedger();
+    }
     await buildZip();
-    document.getElementById("downloadBtn").disabled = false;
+    document.getElementById("downloadBtn").disabled =
+      !ledger.some(i => i.status === "Completed");
   } finally {
     runBtn.disabled = false;
     runBtn.textContent = "Run Pipeline";
     runBtn.classList.remove("opacity-60", "cursor-not-allowed");
+    stopBtn.classList.add("hidden");
   }
 };
 
@@ -891,6 +959,20 @@ document.addEventListener("keydown", e => {
   if (e.key === "-") lbZoom(-0.25);
   if (e.key === "0") lbReset();
 });
+
+document.getElementById("clearBtn").onclick = () => {
+  if (ledger.length && !confirm("Clear the queue and all results?")) return;
+  cancelRequested = true;            // stop any run in progress
+  ledger = [];
+  zipBlobReady = null;
+  csvRows = [];
+  renderLedger();
+  document.getElementById("downloadBtn").disabled = true;
+  const li = document.getElementById("linkInput"); if (li) li.value = "";
+  const fi = document.getElementById("fileInput"); if (fi) fi.value = "";
+  const ci = document.getElementById("csvInput"); if (ci) ci.value = "";
+  const cs = document.getElementById("csvSummary"); if (cs) cs.textContent = "";
+};
 
 document.getElementById("downloadBtn").onclick = () => {
   if (!zipBlobReady) return;
